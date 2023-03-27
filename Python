@@ -1,0 +1,305 @@
+# Import libraries
+import pandas as pd
+import numpy as np
+import seaborn as sns
+import matplotlib.pyplot as plt
+from datetime import timedelta
+from sklearn.metrics import confusion_matrix
+
+
+# Read in the two datasets
+df1 = pd.read_csv('level_progress - level_progress.csv')
+df2 = pd.read_csv('players - players.csv')
+
+# Merge the two datasets on the 'player_id' column
+merged_df = pd.merge(df1, df2, on='player_id')
+
+# Count number of occurrences for each player_id
+player_counts = merged_df.groupby('player_id')['player_id'].transform('count')
+
+# Keep only rows that correlate to a player that appears more than 2 times
+merged_df = merged_df[player_counts >= 2]
+
+# Convert event_datetime to datetime format
+merged_df['event_datetime'] = pd.to_datetime(merged_df['event_datetime'])
+
+# Sort merged_df by event_datetime in ascending order
+merged_df.sort_values(by='event_datetime', inplace=True)
+
+# Print the column names of merged_df
+# print(merged_df.columns)
+
+# Get last day in merged_df
+last_day = merged_df['event_datetime'].max()
+
+# Initialize dictionaries to store results
+failures_started_dict = {}
+results_dict = {}
+results2 = {}
+results = {}
+stage_number_dict = {}
+screen_size = {}
+sys_mem = {}
+stage = {}
+
+# Group merged_df by player_id
+grouped_df = merged_df.groupby(['player_id'])
+
+# Loop over grouped_df object
+for key, group in grouped_df:
+    # Get the system memory for each user
+    sys = grouped_df.get_group(key).sort_values(by='event_datetime').iloc[-1]['system_memory']
+    sys_mem[key] = sys
+
+    # Get the screen size of each player and store in screen_size dictionary
+    scr = grouped_df.get_group(key).sort_values(by='event_datetime').iloc[-1]['screen_size']
+    screen_size[key] = scr
+
+    # Determine if the latest entry for each player is a failure and store in results2 dictionary
+    last_entry = grouped_df.get_group(key).sort_values(by='event_datetime').iloc[-1]['status']
+    results2[key] = (last_entry == 'fail')
+
+    # Calculate proportion of failures started and store in failures_started_dict dictionary
+    failures_started = (group['status'] == 'fail').sum() / ((group['status'] == 'start').sum()+(group['status'] == 'complete').sum())
+    failures_started_dict[key] = np.round(failures_started, 2)
+
+    # Calculate q and m the conditions that determine whether a player quit the game
+    q = last_day - group['event_datetime'].iloc[-1] > timedelta(weeks=3)
+    m = last_day - group['event_datetime'].iloc[-1] > (group['event_datetime'].diff().max()) * 20
+
+    # Determine whether the player quit and store the result
+    stage_number_dict[key] = group['level_number'].iloc[-1]
+    stage[key] = group['stage_number'].iloc[-1]
+    result = q | m
+    results_dict[key] = result
+    results[key] = result
+
+
+def get_failures_started(player_id):
+    """Helper function to get the proportion of failures started for a given player ID.
+
+    Args:
+        player_id (int): The ID of the player.
+
+    Returns:
+        float: The proportion of failures started for the given player ID.
+    """
+    return failures_started_dict.get(player_id, np.nan)
+
+
+def get_stage_number(player_id):
+    """Helper function to get the last stage number for a given player ID.
+
+    Args:
+        player_id (int): The ID of the player.
+
+    Returns:
+        int: The last stage number for the given player ID.
+    """
+    return stage_number_dict.get(player_id, np.nan)
+
+
+def get_results(player_id):
+    """Helper function to get the results for a given player ID.
+
+    Args:
+        player_id (int): The ID of the player.
+
+    Returns:
+        bool: The results for the given player ID.
+    """
+    return results_dict.get(player_id, np.nan)
+
+
+def get_last(player_id):
+    """Helper function to get whether the last level attempted by a given player ID was a failure or not.
+
+    Args:
+        player_id (int): The ID of the player.
+
+    Returns:
+        bool: True if the last level attempted by the given player ID was a failure, False otherwise.
+    """
+    return results2.get(player_id, np.nan)
+
+
+def get_stage(player_id):
+    """Helper function to get the last stage attempted by a given player ID.
+
+    Args:
+        player_id (int): The ID of the player.
+
+    Returns:
+        int: The last stage attempted by the given player ID.
+    """
+    return stage.get(player_id, np.nan)
+
+
+merged_df.to_csv('merged_fin.csv')
+# Add columns to merged_df using helper functions
+merged_df['Proportion of failures'] = merged_df['player_id'].apply(get_failures_started)
+merged_df['last_level_number'] = merged_df['player_id'].apply(get_stage_number)
+merged_df['results'] = merged_df['player_id'].apply(get_results)
+merged_df['last stage'] = merged_df['player_id'].apply(get_stage)
+merged_df['last level failed'] = merged_df['player_id'].apply(get_last)
+
+# Calculate TP, TN, FP, FN for results2 which show if the last game was failed or complete
+y_true = []
+y_pred = []
+for key in results2:
+    y_true.append(results[key])
+    y_pred.append(results2[key])
+tn, fp, fn, tp = confusion_matrix(y_true, y_pred).ravel()
+
+# Plot confusion matrix for results2 which is in fact a truth table
+cm = [[tn, fn], [fp, tp]]
+sns.heatmap(cm, annot=True, cmap="Blues", fmt='g')
+plt.title("Truth table")
+plt.xlabel("Stopped playing")
+plt.ylabel("Failed the last level they attempted")
+plt.show()
+
+# Create lists of proportion of failed levels  and churn values
+failurestarted_list = list(failures_started_dict.values())
+results_list = list(results_dict.values())
+
+# Split data into two classes where the churn is true and flase
+Notq = [failurestarted_list[i] for i in range(len(failurestarted_list)) if not results_list[i]]
+success_levels = [failurestarted_list[i] for i in range(len(failurestarted_list)) if results_list[i]]
+
+# Determine the minimum number of samples between the two categories
+min_samples = min(len(Notq), len(success_levels))
+
+# Resample data to match minimum sample size so that the comparison is more just
+Notq = np.random.choice(Notq, min_samples, replace=False)
+success_levels = np.random.choice(success_levels, min_samples, replace=False)
+
+# Combine data
+all_levels = np.concatenate((Notq, success_levels))
+
+# Create histogram with bins from 0 to 1 in increments of 0.01 for precision
+bin_edges = np.arange(0, 1.1, 0.01)
+
+fig, (ax1, ax2) = plt.subplots(nrows=2, sharex=True, gridspec_kw={"height_ratios": [3, 1]})
+
+# Plot full histogram in first subplot
+ax1.hist(Notq, bins=bin_edges, alpha=0.8, width=0.01, align='right', histtype='bar', label='No Churn', color='palevioletred')
+ax1.hist(success_levels, bins=bin_edges, alpha=0.5, width=0.01, align='mid', histtype='bar', label='Churn', color='mediumslateblue')
+
+
+ax1.legend()
+
+# Plot close-up histogram in second subplot
+ax2.hist(Notq, bins=bin_edges, alpha=0.8, width=0.01, align='right', histtype='bar', label='No Churn', color='palevioletred')
+ax2.hist(success_levels, bins=bin_edges, alpha=0.5, width=0.01, align='mid', histtype='bar', label='Churn', color='mediumslateblue')
+
+# Set y-axis limit for second subplot
+ax2.set_ylim(0, 200)
+
+# Show the plot
+
+# Set axis labels and legend
+plt.xlabel('Proportion of failed levels')
+
+
+# Set plot title
+plt.title('Proportion of failed levels and Churn')
+
+plt.show()
+
+
+# Get the bar containers for each histogram
+Notq = ax1.bar(bin_edges[:-1], np.histogram(Notq, bins=bin_edges)[0], width=0.05, alpha=0.8, color='palevioletred')
+success_bars = ax1.bar(bin_edges[:-1]+0.05, np.histogram(success_levels, bins=bin_edges)[0], width=0.05, alpha=0.5, color='mediumslateblue')
+
+# Calculate the differences between the heights of corresponding bars
+height_diffs = [Notq[i].get_height() - success_bars[i].get_height() for i in range(len(Notq))]
+
+# Get the top 20 maximum height differences and their corresponding bin values
+top_20_max_indices = np.argsort(height_diffs)[-20:][::-1]
+top_20_max_diffs = [height_diffs[i] for i in top_20_max_indices]
+top_20_max_bins = [bin_edges[i] for i in top_20_max_indices]
+
+# Print the results
+# print("Top 20 maximum differences:")
+# for i in range(len(top_20_max_indices)):
+#     print("{}. Bin value: {:.2f}, height difference: {:.2f}".format(i+1, top_20_max_bins[i], top_20_max_diffs[i]))
+#
+
+# Create lists from needed dictionaries
+levels = list(stage_number_dict.values())
+results = list(results_dict.values())
+
+
+# Split the levels based on the results
+successful_levels = [level for level, result in zip(levels, results) if result]
+failed_levels = [level for level, result in zip(levels, results) if not result]
+
+# Create a histogram with 10 bins for both successful and failed levels
+bin_edges = range(1, 12)
+plt.hist([successful_levels, failed_levels], bins=bin_edges, label=['Churn', 'No Churn'], color = ['palevioletred', 'mediumslateblue'])
+
+# Set axis labels and legend
+plt.xlabel('Last Level played')
+plt.ylabel('Amount of players')
+plt.legend()
+
+# Show the plot
+plt.show()
+
+
+
+
+
+# Convert the values of the dictionary screen_size to a list
+scr = list(screen_size.values())
+
+# Create two lists of screen sizes, one for Churn and one for NoChurn, based on the corresponding boolean values in the results list
+Churn = [level for level, result in zip(scr, results) if result]
+NoChurn = [level for level, result in zip(scr, results) if not result]
+
+# Define the bin edges for the histogram
+bin_edges = range(1, 12)
+
+# Create a histogram with the Churn and NoChurn lists, using the bin edges defined above, and set the color and label for each dataset
+# Set density to True to plot the normalized frequency (i.e., probability density) instead of the count
+plt.hist([Churn, NoChurn], bins=bin_edges, label=['Churn', 'No Churn'], color=['red', 'purple'], density=[True, True])
+
+# Set the x and y labels for the plot
+plt.xlabel('Screen size')
+plt.ylabel('Frequency')
+
+# Add a legend to the plot
+plt.legend()
+
+# Show the plot
+plt.show()
+
+
+# Convert boolean values to numeric values (1 for True, 0 for False)
+results_list = [int(x) for x in results_list]
+failurestarted_list = [int(x) for x in failurestarted_list]
+
+# Calculate Pearson correlation coefficient using numpy's corrcoef function
+correlation_matrix = np.corrcoef(results_list, failurestarted_list)
+correlation_coefficient = correlation_matrix[0, 1]
+
+print("Pearson correlation coefficient:", correlation_coefficient)
+
+# we want to drop columns that have no correlation
+columns_to_drop = ['system_memory', 'stage_number', 'screen_size']
+
+# Drop the columns
+merged_df = merged_df.drop(columns=columns_to_drop)
+
+# Calculate correlation matrix
+corr_matrix = merged_df.corr()
+
+# Set figure size
+plt.figure(figsize=(14, 10))
+
+# Plot the correlation matrix
+sns.heatmap(corr_matrix, cmap='coolwarm', annot=True, fmt='.2f')
+
+plt.show()
+
